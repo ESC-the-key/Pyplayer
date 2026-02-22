@@ -8,8 +8,6 @@ import pygame
 import warnings
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
-
-warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
 import tomllib
 
 try:
@@ -109,7 +107,7 @@ def init_curses(config: Dict):
         curses.init_color(11, *(int(c*1000//255) for c in play_bg))  # 11 current track bg
     curses.init_pair(1, curses.COLOR_BLACK, 10)     # selection
     curses.init_pair(2, curses.COLOR_BLACK, 11)     # playing track
-    curses.init_pair(3, 10, -1)
+    curses.init_pair(3, 10, -1) # vol
     return stdscr
 
 def cleanup():
@@ -119,12 +117,21 @@ def cleanup():
     curses.endwin()
     pygame.mixer.quit()
 
-def draw_volume_bar(stdscr, vol: float, y: int, w: int):
-    bar_width = 20
-    filled = int(vol * bar_width)
-    bar = "█" * filled + "░" * (bar_width - filled)
-    text = f"Vol: {int(vol*100):3d}% [{bar}]"
-    stdscr.addstr(y, max(2, w//2 - len(text)//2), text, curses.color_pair(3))
+def draw_status_bar(stdscr, vol: float, playing: Path | None, names: List[str], files: List[Path], y: int, w: int):
+    if playing is None:
+        status = "Nothing playing"
+    else:
+        try:
+            idx = files.index(playing)
+            status = names[idx]
+        except ValueError:
+            status = playing.name
+    max_status_len = w - 50
+    if len(status) > max_status_len:
+        status = status[:max_status_len] + "..."
+    vol_text = f"{int(vol*100):3d}% [{int(vol*20)*'█'}{(20-int(vol*20))*'░'}]"
+    line = f"{status:<{max_status_len + 20}}  {vol_text}"
+    stdscr.addstr(y, max(-2, w//2 - len(line)//2), line, curses.color_pair(3))
 
 def main(stdscr, folder: str):
     config = load_config()
@@ -143,10 +150,14 @@ def main(stdscr, folder: str):
     current_idx = 0
     playing: Path | None = None
     scroll_offset = 0
+    pygame.mixer.pre_init(44100, -16, 2, 4096)
     pygame.mixer.init()
     pygame.mixer.music.set_volume(config["volume"]["default"])
     current_volume = config["volume"]["default"]
     vol_step = config["volume"]["step"]
+    current_track_name = ""
+    track_dur = 0
+    track_start_time = 0
     while True:
         h, w = stdscr.getmaxyx()
         list_area_h = h - 5
@@ -176,8 +187,8 @@ def main(stdscr, folder: str):
                 attr = 0
 
             stdscr.addstr(y, 2, line, attr)
-        draw_volume_bar(stdscr, current_volume, h-4, w)
-        help_text = "↑↓ select  ⏎ play/loop  SPACE stop/pause  ←→ volume  q quit"
+        draw_status_bar(stdscr, current_volume, playing, names, files, h-4, w)
+        help_text = "↑↓ select  ⏎ play/loop  SPACE pause  ←→ volume  q quit"
         stdscr.addstr(h-2, 2, help_text[:w-4], curses.A_DIM)
         stdscr.refresh()
 
@@ -189,11 +200,9 @@ def main(stdscr, folder: str):
             break
         elif key == ord(' '):
             if pygame.mixer.music.get_busy():
-                if pygame.mixer.music.get_pos() > 0:  
-                    pygame.mixer.music.pause()
-                else:
-                    pygame.mixer.music.unpause()
-            playing = None
+                pygame.mixer.music.pause()
+            else:
+                pygame.mixer.music.unpause()
         elif key == curses.KEY_UP:
             current_idx = (current_idx - 1) % len(files)
         elif key == curses.KEY_DOWN:
@@ -204,6 +213,16 @@ def main(stdscr, folder: str):
                 pygame.mixer.music.load(str(path))
                 pygame.mixer.music.play(-1)   # TODO: playback other than inf reset
                 playing = path
+                current_track_name = get_display_name(path, config["ui"]["show_full_path"])
+                try:
+                    if TinyTag:
+                        tag = TinyTag.get(str(path))
+                        track_dur = tag.duration or 0
+                    else:
+                        track_dur = 0
+                except:
+                    track_dur = 0
+                track_start_time = pygame.time.get_ticks()
             except pygame.error as e:
                 err = f"Cannot play: {e}"
                 stdscr.addstr(h//2, max(0, w//2 - len(err)//2), err,
