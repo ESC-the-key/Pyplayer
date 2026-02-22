@@ -36,7 +36,6 @@ DEFAULT_CONFIG = {
 
 SUPPORTED = ('.mp3', '.wav', '.ogg', '.flac')
 
-# ────────────────────────────────────────────────
 def load_config() -> Dict[str, Any]:
     if sys.platform == "win32":
         config_dir = Path(file).parent
@@ -190,7 +189,7 @@ def main(stdscr, folder: str):
             break
         elif key == ord(' '):
             if pygame.mixer.music.get_busy():
-                if pygame.mixer.music.get_pos() > 0:  # уже играет → пауза
+                if pygame.mixer.music.get_pos() > 0:  
                     pygame.mixer.music.pause()
                 else:
                     pygame.mixer.music.unpause()
