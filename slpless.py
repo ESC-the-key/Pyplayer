@@ -109,7 +109,7 @@ def init_curses(config: Dict):
         curses.init_color(11, *(int(c*1000//255) for c in play_bg))  # 11 current track bg
     curses.init_pair(1, curses.COLOR_BLACK, 10)     # selection
     curses.init_pair(2, curses.COLOR_BLACK, 11)     # playing track
-    curses.init_pair(3, curses.COLOR_CYAN, -1)      # vol / status
+    curses.init_pair(3, 10, -1)
     return stdscr
 
 def cleanup():
