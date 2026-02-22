@@ -162,8 +162,8 @@ def main(stdscr, folder: str):
         h, w = stdscr.getmaxyx()
         list_area_h = h - 5
         if len(files) > list_area_h: # centering
-            ideal_offset = current_idx - list_area_h // 2
-            scroll_offset = max(0, min(ideal_offset, len(files) - list_area_h))
+            ideal_offset = current_idx - list_area_h // 5
+            scroll_offset = max(0, min(ideal_offset, len(files) - list_area_h + 2))
         else:
             scroll_offset = 0
         stdscr.clear()
