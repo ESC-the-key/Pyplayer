@@ -1,38 +1,134 @@
+# slpless - suckless player for less code
+# this is not actual suckless software, just inspired
 import os
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = '1'
-import sys, curses, pygame, warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
+import sys
+import curses
+import pygame
+import warnings
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
+
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
+import tomllib
+
 try:
     from tinytag import TinyTag
 except ImportError:
     TinyTag = None
-paused = None
-SUPPORTED = ('.mp3', '.wav') # TODO: поддержка форматов кроме мп3 и вав
-def get_display_name(path: Path) -> str: # красивое название
+DEFAULT_CONFIG = {
+    "volume": {
+        "default": 0.80,
+        "step": 0.05,
+        "min": 0.0,
+        "max": 1.0
+    },
+    "colors": {
+        "selection_fg": "black",
+        "selection_bg": [183, 189, 248],   #b7bdf8
+        "playing_fg":   "black",
+        "playing_bg":   [200, 160, 220],
+    },
+    "ui": {
+        "show_full_path": False
+    }
+}
+
+SUPPORTED = ('.mp3', '.wav', '.ogg', '.flac')
+
+# ────────────────────────────────────────────────
+def load_config() -> Dict[str, Any]:
+    if sys.platform == "win32":
+        config_dir = Path(file).parent
+    else:
+        config_dir = Path.home() / ".config" / "slpless"
+
+    config_path = config_dir / "slpless.toml"
+    if not config_path.is_file():
+        try:
+            config_dir.mkdir(parents=True, exist_ok=True)
+            with config_path.open("w", encoding="utf-8") as f:
+                f.write("""\
+# slpless.toml - configuration file
+
+[volume]
+default = 0.80
+step    = 0.05
+min     = 0.0
+max     = 1.0
+
+[colors]
+selection_fg = "black"
+selection_bg = [183, 189, 248]
+playing_fg   = "black"
+playing_bg   = [200, 160, 220]
+
+[ui]
+show_full_path = false
+""")
+            print(f"Created default config: {config_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Cannot create config {config_path}: {e}", file=sys.stderr)
+    if config_path.is_file():
+        try:
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+            merged = DEFAULT_CONFIG.copy()
+            merged.update(data)
+            for k in ("volume", "colors", "ui"):
+                if k in data:
+                    merged[k].update(data[k])
+            return merged
+        except Exception as e:
+            print(f"Config error in {config_path}: {e}", file=sys.stderr)
+    return DEFAULT_CONFIG
+
+def get_display_name(path: Path, show_full: bool = False) -> str:
     if TinyTag:
         try:
             tag = TinyTag.get(str(path))
-            return f"{tag.artist or 'Unknown'} - {tag.title or p.stem}"
-        except Exception:
+            artist = tag.artist or "Unknown"
+            title = tag.title or path.stem
+            return f"{artist} - {title}"
+        except:
             pass
-    return path.name
-def init_curses():
+    return str(path) if show_full else path.name
+
+def init_curses(config: Dict):
     stdscr = curses.initscr()
-    curses.noecho(); curses.cbreak(); curses.curs_set(0)
+    curses.noecho()
+    curses.cbreak()
+    curses.curs_set(0)
     stdscr.keypad(True)
     curses.start_color()
     curses.use_default_colors()
+
+    sel_bg = config["colors"]["selection_bg"]
+    play_bg = config["colors"]["playing_bg"]
     if curses.can_change_color():
-        curses.init_color(curses.COLOR_MAGENTA, 183*1000//255, 189*1000//255, 248*1000//255)
-    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_MAGENTA)   # выделение
-    curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+        curses.init_color(10, *(int(c*1000//255) for c in sel_bg))   # 10 select bg
+        curses.init_color(11, *(int(c*1000//255) for c in play_bg))  # 11 current track bg
+    curses.init_pair(1, curses.COLOR_BLACK, 10)     # selection
+    curses.init_pair(2, curses.COLOR_BLACK, 11)     # playing track
+    curses.init_pair(3, curses.COLOR_CYAN, -1)      # vol / status
     return stdscr
+
 def cleanup():
-    curses.nocbreak(); curses.echo(); curses.curs_set(1); curses.endwin()
+    curses.nocbreak()
+    curses.echo()
+    curses.curs_set(1)
+    curses.endwin()
     pygame.mixer.quit()
+
+def draw_volume_bar(stdscr, vol: float, y: int, w: int):
+    bar_width = 20
+    filled = int(vol * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    text = f"Vol: {int(vol*100):3d}% [{bar}]"
+    stdscr.addstr(y, max(2, w//2 - len(text)//2), text, curses.color_pair(3))
+
 def main(stdscr, folder: str):
+    config = load_config()
     folder = Path(folder).resolve()
     if not folder.is_dir():
         print(f"Not a directory: {folder}", file=sys.stderr)
@@ -44,26 +140,26 @@ def main(stdscr, folder: str):
     if not files:
         print("No supported audio files found.", file=sys.stderr)
         return 1
-    names = [get_display_name(p) for p in files]
+    names = [get_display_name(p, config["ui"]["show_full_path"]) for p in files]
     current_idx = 0
     playing: Path | None = None
     scroll_offset = 0
     pygame.mixer.init()
-    pygame.mixer.music.set_volume(0.9)
+    pygame.mixer.music.set_volume(config["volume"]["default"])
+    current_volume = config["volume"]["default"]
+    vol_step = config["volume"]["step"]
     while True:
         h, w = stdscr.getmaxyx()
-        list_area_h = h - 4  # заголовок
-        if list_area_h < 1:
-            list_area_h = 1
-        if len(files) > list_area_h:  # скроллинг
+        list_area_h = h - 5
+        if len(files) > list_area_h: # centering
             ideal_offset = current_idx - list_area_h // 2
             scroll_offset = max(0, min(ideal_offset, len(files) - list_area_h))
         else:
             scroll_offset = 0
         stdscr.clear()
-        header = f"  {folder.name}  ({len(files)} tracks)" # заголовок с папкой
+        header = f"  {folder.name}  ({len(files)} tracks)"
         stdscr.addstr(0, 0, header.center(w)[:w], curses.A_BOLD | curses.A_REVERSE)
-        max_name_len = w
+        max_name_len = w - 6
         for i in range(scroll_offset, scroll_offset + list_area_h):
             if i >= len(files):
                 break
@@ -72,26 +168,33 @@ def main(stdscr, folder: str):
             if len(names[i]) > max_name_len:
                 name = name[:-3] + "..."
             line = f" {name:<{max_name_len}} "
+
             if i == current_idx:
                 attr = curses.color_pair(1) | curses.A_BOLD
             elif playing and files[i] == playing:
                 attr = curses.color_pair(2) | curses.A_BOLD
             else:
                 attr = 0
+
             stdscr.addstr(y, 2, line, attr)
-        help_text = "↑↓ select   ⏎ play/loop  SPACE stop  q quit"
-        stdscr.addstr(h-1, 2, help_text[:w-4], curses.A_DIM)
+        draw_volume_bar(stdscr, current_volume, h-4, w)
+        help_text = "↑↓ select  ⏎ play/loop  SPACE stop/pause  ←→ volume  q quit"
+        stdscr.addstr(h-2, 2, help_text[:w-4], curses.A_DIM)
         stdscr.refresh()
-        try:         # клавиатура
+
+        try:
             key = stdscr.getch()
         except KeyboardInterrupt:
             key = ord('q')
-        if key in (ord('q'), 27):  # выход 
+        if key in (ord('q'), 27):
             break
         elif key == ord(' '):
-            if playing:
-                pygame.mixer.music.stop()
-                playing = None
+            if pygame.mixer.music.get_busy():
+                if pygame.mixer.music.get_pos() > 0:  # уже играет → пауза
+                    pygame.mixer.music.pause()
+                else:
+                    pygame.mixer.music.unpause()
+            playing = None
         elif key == curses.KEY_UP:
             current_idx = (current_idx - 1) % len(files)
         elif key == curses.KEY_DOWN:
@@ -100,25 +203,34 @@ def main(stdscr, folder: str):
             path = files[current_idx]
             try:
                 pygame.mixer.music.load(str(path))
-                pygame.mixer.music.play(-1)  # TODO: сделать поддержу не бесконечного проигрыша
+                pygame.mixer.music.play(-1)   # TODO: playback other than inf reset
                 playing = path
             except pygame.error as e:
-                err_msg = f"Cannot play: {e}"
-                stdscr.addstr(h//2, max(0, w//2 - len(err_msg)//2), err_msg, curses.A_BOLD | curses.color_pair(1))
+                err = f"Cannot play: {e}"
+                stdscr.addstr(h//2, max(0, w//2 - len(err)//2), err,
+                              curses.A_BOLD | curses.color_pair(1))
                 stdscr.refresh()
-                stdscr.getch() # TODO: пауза
+                stdscr.getch()
+        elif key == curses.KEY_LEFT:
+            current_volume = max(config["volume"]["min"], current_volume - vol_step)
+            pygame.mixer.music.set_volume(current_volume)
+        elif key == curses.KEY_RIGHT:
+            current_volume = min(config["volume"]["max"], current_volume + vol_step)
+            pygame.mixer.music.set_volume(current_volume)
     return 0
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Err: folder name needed")
+        print("Usage: slpless.py <folder>")
         sys.exit(1)
     folder = sys.argv[1]
+    config = load_config()
     try:
-        stdscr = init_curses()
+        stdscr = init_curses(config)
         ret = main(stdscr, folder)
     except Exception as e:
         print("Error:", e, file=sys.stderr)
         ret = 1
     finally:
-        cleanup()# мощно вдохновился минимализмом, поэтому вот саклесс плеер на pygame
+        cleanup()
     sys.exit(ret)
