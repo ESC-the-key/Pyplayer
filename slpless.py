@@ -36,7 +36,7 @@ SUPPORTED = ('.mp3', '.wav', '.ogg', '.flac')
 
 def load_config() -> Dict[str, Any]:
     if sys.platform == "win32":
-        config_dir = Path(file).parent
+        config_dir = Path(__file__).parent
     else:
         config_dir = Path.home() / ".config" / "slpless"
 
@@ -129,7 +129,7 @@ def draw_status_bar(stdscr, vol: float, playing: Path | None, names: List[str], 
     max_status_len = w - 50
     if len(status) > max_status_len:
         status = status[:max_status_len] + "..."
-    vol_text = f"{int(vol*100):3d}% [{int(vol*20)*'█'}{(20-int(vol*20))*'░'}]"
+    vol_text = f"{int(vol*100):3d}% {int(vol*20)*'█'}{(20-int(vol*20))*'░'}"
     line = f"{status:<{max_status_len + 20}}  {vol_text}"
     stdscr.addstr(y, max(-2, w//2 - len(line)//2), line, curses.color_pair(3))
 
