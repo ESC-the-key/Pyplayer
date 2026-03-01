@@ -2,12 +2,8 @@
 # this is not actual suckless software, just inspired
 import os
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = '1'
-import sys
-import curses
-import pygame
-import warnings
+import sys, curses, pygame
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
 import tomllib
 
 try:
@@ -25,7 +21,7 @@ DEFAULT_CONFIG = {
         "selection_fg": "black",
         "selection_bg": [183, 189, 248],   #b7bdf8
         "playing_fg":   "black",
-        "playing_bg":   [200, 160, 220],
+        "playing_bg":   [200, 160, 220], # darker than b7bdf8
     },
     "ui": {
         "show_full_path": False
@@ -155,9 +151,6 @@ def main(stdscr, folder: str):
     pygame.mixer.music.set_volume(config["volume"]["default"])
     current_volume = config["volume"]["default"]
     vol_step = config["volume"]["step"]
-    current_track_name = ""
-    track_dur = 0
-    track_start_time = 0
     while True:
         h, w = stdscr.getmaxyx()
         list_area_h = h - 5
@@ -213,20 +206,9 @@ def main(stdscr, folder: str):
                 pygame.mixer.music.load(str(path))
                 pygame.mixer.music.play(-1)   # TODO: playback other than inf reset
                 playing = path
-                current_track_name = get_display_name(path, config["ui"]["show_full_path"])
-                try:
-                    if TinyTag:
-                        tag = TinyTag.get(str(path))
-                        track_dur = tag.duration or 0
-                    else:
-                        track_dur = 0
-                except:
-                    track_dur = 0
-                track_start_time = pygame.time.get_ticks()
             except pygame.error as e:
                 err = f"Cannot play: {e}"
-                stdscr.addstr(h//2, max(0, w//2 - len(err)//2), err,
-                              curses.A_BOLD | curses.color_pair(1))
+                stdscr.addstr(h//2, max(0, w//2 - len(err)//2), err, curses.A_BOLD | curses.COLOR_RED)
                 stdscr.refresh()
                 stdscr.getch()
         elif key == curses.KEY_LEFT:
@@ -239,7 +221,7 @@ def main(stdscr, folder: str):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: slpless.py <folder>")
+        print("Usage: python3 slpless.py <folder>")
         sys.exit(1)
     folder = sys.argv[1]
     config = load_config()
