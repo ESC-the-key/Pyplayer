@@ -2,7 +2,7 @@
 # this is not actual suckless software, just inspired
 import os
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = '1'
-import sys, curses, pygame
+import sys, curses, pygame, time
 from pathlib import Path
 import tomllib
 from rapidfuzz import process, fuzz
@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
         "selection_bg": [183, 189, 248],   #b7bdf8
         "playing_fg":   "black",
         "playing_bg":   [200, 160, 220], # darker than b7bdf8
+        "title_fg": "black",
+        "title_bg": [120, 120, 120]
     },
     "ui": {
         "show_full_path": False
@@ -31,7 +33,6 @@ DEFAULT_CONFIG = {
 }
 
 SUPPORTED = ('.mp3', '.wav', '.ogg', '.flac')
-
 def load_config() -> Dict[str, Any]:
     if sys.platform == "win32":
         config_dir = Path(__file__).parent
@@ -57,6 +58,8 @@ selection_fg = "black"
 selection_bg = [183, 189, 248]
 playing_fg   = "black"
 playing_bg   = [200, 160, 220]
+title_fg = "black"
+title_bg = [120, 120, 120]
 
 [ui]
 show_full_path = false
@@ -95,17 +98,21 @@ def init_curses(config: Dict):
     curses.cbreak()
     curses.curs_set(0)
     stdscr.keypad(True)
+    stdscr.timeout(100)  # refresh every 100ms even without input
     curses.start_color()
     curses.use_default_colors()
 
     sel_bg = config["colors"]["selection_bg"]
     play_bg = config["colors"]["playing_bg"]
+    title_bg = config["colors"]["title_bg"]
     if curses.can_change_color():
         curses.init_color(10, *(int(c*1000//255) for c in sel_bg))   # 10 select bg
         curses.init_color(11, *(int(c*1000//255) for c in play_bg))  # 11 current track bg
+        curses.init_color(12, *(int(c*1000//255) for c in title_bg))  # title bg
     curses.init_pair(1, curses.COLOR_BLACK, 10)     # selection
     curses.init_pair(2, curses.COLOR_BLACK, 11)     # playing track
     curses.init_pair(3, 10, -1) # vol
+    curses.init_pair(4, curses.COLOR_BLACK, 12)  # title
     return stdscr
 
 def cleanup():
@@ -130,7 +137,7 @@ def draw_status_bar(stdscr, vol: float, playing: Path | None, names: List[str], 
     else:
         try:
             idx = files.index(playing)
-            status = names[idx]
+            status = names[idx] + "\n🎵🎵🎵"
         except ValueError:
             status = playing.name
     max_status_len = w - 50
@@ -139,8 +146,15 @@ def draw_status_bar(stdscr, vol: float, playing: Path | None, names: List[str], 
     time_text = ""
     if playing:
         pos = pygame.mixer.music.get_pos()
-        cur = 0 if pos < 0 else pos // 1000
+        cur_sec = 0 if pos < 0 else pos / 1000
         total = get_song_time(playing)
+        if total:
+            if pygame.mixer.music.get_busy():
+                cur = int(cur_sec % total)
+            else:
+                cur = int(min(cur_sec, total))
+        else:
+            cur = int(cur_sec)
 
         if total:
             time_text = f"{cur//60:02}:{cur%60:02}/{int(total)//60:02}:{int(total)%60:02}"
@@ -155,10 +169,12 @@ def handle_keybind(key, state):
         state["quit"] = True
 
     elif key == ord(' '):
-        if pygame.mixer.music.get_busy():
-            pygame.mixer.music.pause()
-        else:
+        if state["paused"]:
             pygame.mixer.music.unpause()
+            state["paused"] = False
+        else:
+            pygame.mixer.music.pause()
+            state["paused"] = True
 
     elif key == curses.KEY_LEFT:
         state["volume"] = max(state["vol_min"], round(state["volume"] - state["vol_step"], 2))
@@ -168,6 +184,100 @@ def handle_keybind(key, state):
         state["volume"] = min(state["vol_max"], round(state["volume"] + state["vol_step"], 2))
         pygame.mixer.music.set_volume(state["volume"])
     return state
+
+def run_screensaver(stdscr, playing, names, files, repeat):
+    curses.def_prog_mode()
+    stdscr.clear()
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+
+    ascii_path = Path(__file__).parent / "ascii.txt"
+    if ascii_path.is_file():
+        with ascii_path.open("r", encoding="utf-8") as f:
+            art_lines = [line.rstrip("\n") for line in f]
+    else:
+        art_lines = ["(no ascii found)"]
+    track_name = "--"
+    time_text = "--:--"
+    repeat_text = "[repeat one]" if repeat else "[repeat all]"
+
+    if playing:
+        try:
+            idx = files.index(playing)
+            track_name = names[idx]
+        except ValueError:
+            track_name = playing.name
+
+        pos = pygame.mixer.music.get_pos()
+        cur_sec = 0 if pos < 0 else pos / 1000
+
+        total = get_song_time(playing)
+
+        if total:
+            cur = int(cur_sec % total) if pygame.mixer.music.get_busy() else int(min(cur_sec, total))
+            time_text = f"{cur//60:02}:{cur%60:02}/{int(total)//60:02}:{int(total)%60:02}"
+        else:
+            cur = int(cur_sec)
+            time_text = f"{cur//60:02}:{cur%60:02}"
+
+    content = art_lines + ["", track_name, time_text, repeat_text]
+    total_h = len(content)
+    start_y = max(0, h // 2 - total_h // 2)
+
+    for i, line in enumerate(content):
+        x = max(0, w // 2 - len(line) // 2)
+        stdscr.addstr(start_y + i, x, line,
+                      curses.color_pair(4) | curses.A_BOLD | curses.A_REVERSE)
+
+    stdscr.nodelay(True)
+
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        track_name = "--"
+        time_text = "--:--"
+        repeat_text = "[repeat one]" if repeat else "[repeat all]"
+
+        if playing:
+            try:
+                idx = files.index(playing)
+                track_name = names[idx]
+            except ValueError:
+                track_name = playing.name
+
+            pos = pygame.mixer.music.get_pos()
+            cur_sec = 0 if pos < 0 else pos / 1000
+            total = get_song_time(playing)
+
+            if total:
+                cur = int(cur_sec % total)
+                time_text = f"{cur//60:02}:{cur%60:02}/{int(total)//60:02}:{int(total)%60:02}"
+            else:
+                cur = int(cur_sec)
+                time_text = f"{cur//60:02}:{cur%60:02}"
+
+        content = art_lines + ["", track_name, time_text, repeat_text]
+        start_y = max(0, h // 2 - len(content) // 2)
+
+        for i, line in enumerate(content):
+            x = max(0, w // 2 - len(line) // 2)
+            stdscr.addstr(start_y + i, x, line,
+                        curses.color_pair(4) | curses.A_BOLD | curses.A_REVERSE)
+
+        stdscr.refresh()
+
+        # ~10 FPS update (smooth enough, cheap)
+        time.sleep(0.1)
+
+        key = stdscr.getch()
+        if key != -1:
+            break
+
+    stdscr.nodelay(True)
+    stdscr.clear()
+    stdscr.clear()
+    stdscr.erase()
+
 def main(stdscr, folder: str):
     config = load_config()
     folder = Path(folder).resolve()
@@ -175,7 +285,7 @@ def main(stdscr, folder: str):
         print(f"Not a directory: {folder}", file=sys.stderr)
         return 1
     files: List[Path] = sorted(
-        p for p in folder.iterdir()
+        p for p in folder.rglob("*")
         if p.is_file() and p.suffix.lower() in SUPPORTED
     )
     if not files:
@@ -189,14 +299,17 @@ def main(stdscr, folder: str):
     pygame.mixer.init()
     pygame.mixer.music.set_volume(config["volume"]["default"])
     current_volume = config["volume"]["default"]
-    repeat = False
+    repeat = True
     vol_step = config["volume"]["step"]
     search_mode = False
     search_query = ""
     search_results = []
     search_cursor = 0
+    last_input_time = time.time()
+    IDLE_TIMEOUT = 60
     state = {
         "quit": False,
+        "paused": False,
         "volume": current_volume,
         "vol_step": vol_step,
         "vol_min": config["volume"]["min"],
@@ -214,18 +327,25 @@ def main(stdscr, folder: str):
             search_query,
             names,
             scorer=fuzz.WRatio,
+            processor=str.lower,
             limit=100
         )
 
-        search_results = [idx for _, score, idx in results if score > 45]
+        search_results = [idx for _, score, idx in results if score > 35]
         search_cursor = 0
     while True:
         h, w = stdscr.getmaxyx()
-        stdscr.clear()
+        stdscr.erase()
+        if playing and not pygame.mixer.music.get_busy() and not repeat and not state["paused"]:
+            current_idx = (current_idx + 1) % len(files)
+            path = files[current_idx]
+            pygame.mixer.music.load(str(path))
+            pygame.mixer.music.play(-1 if repeat else 0)
+            playing = path
         header = f"  {folder.name}  ({len(files)} tracks)"
-        stdscr.addstr(0, 0, header.center(w)[:w], curses.A_BOLD | curses.A_REVERSE)
+        stdscr.addstr(0, 0, header.center(w)[:w], curses.color_pair(4) | curses.A_BOLD)
         if search_mode:
-            stdscr.addstr(1, 2, f"/{search_query}"[:w-4], curses.A_BOLD)
+            stdscr.addstr(1, 2, f"{search_query}"[:w-4], curses.A_BOLD)
         list_h = h - 6
         max_name_len = w - 6
         if search_mode:
@@ -266,6 +386,9 @@ def main(stdscr, folder: str):
         stdscr.refresh()
 
         key = stdscr.getch()
+        if key != -1:
+            last_input_time = time.time()
+
         if not search_mode:
             state = handle_keybind(key, state)
         if key == curses.KEY_UP:
@@ -293,6 +416,17 @@ def main(stdscr, folder: str):
             run_search()
         elif key == ord('r') and not search_mode:
             repeat = not repeat
+        if key == ord('b'):
+            run_screensaver(stdscr, playing, names, files, repeat)
+            curses.flushinp()
+            last_input_time = time.time()
+            continue
+
+        if time.time() - last_input_time > IDLE_TIMEOUT:
+            run_screensaver(stdscr, playing, names, files, repeat)
+            curses.flushinp()
+            last_input_time = time.time()
+            continue
 
         elif search_mode:
 
@@ -330,17 +464,28 @@ def main(stdscr, folder: str):
     return 0
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python3 slpless.py <folder>")
-        sys.exit(1)
-    folder = sys.argv[1]
+
     config = load_config()
+
     try:
         stdscr = init_curses(config)
+
+        if len(sys.argv) == 2:
+            folder = sys.argv[1]
+
+        else:
+            folder = home_screen(stdscr)
+            if folder is None:
+                cleanup()
+                sys.exit(0)
+
         ret = main(stdscr, folder)
+
     except Exception as e:
         print("Error:", e, file=sys.stderr)
         ret = 1
+
     finally:
         cleanup()
+
     sys.exit(ret)
