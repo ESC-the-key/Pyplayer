@@ -266,7 +266,6 @@ def run_screensaver(stdscr, playing, names, files, repeat):
 
         stdscr.refresh()
 
-        # ~10 FPS update (smooth enough, cheap)
         time.sleep(0.1)
 
         key = stdscr.getch()
